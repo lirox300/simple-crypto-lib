@@ -1,5 +1,5 @@
 # Simple Crypto Lib
-Простая библиотека на C++ (XOR-шифрование) и консольное приложение на Python.
+Простая библиотека на C++ (XOR-шифрование) и консольная многопоточная утилита для безопасного копирования файлов.
 ## Сборка библиотеки
 **Для macOS:**
 ```
@@ -9,7 +9,16 @@ clang++ -shared -fPIC -o lib.dylib lib.cpp
 ```
 g++ -shared -fPIC -o lib.so lib.cpp
 ```
+## Сборка утилиты копирования
+**Для macOS:**
+```
+clang++ -pthread -Wall -o secure_copy secure_copy.cpp ./lib.dylib
+```
+**Для Linux:**
+```
+g++ -pthread -Wall -o secure_copy secure_copy.cpp ./lib.so
+```
 ## Запуск
 ```
-python3 app.py ./<библиотека> <символ_ключа> <входной_файл> <выходной_файл>
+./secure_copy <входной_файл> <выходной_файл> <символ_ключа>
 ```
