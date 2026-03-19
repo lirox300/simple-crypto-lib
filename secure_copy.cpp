@@ -1,10 +1,14 @@
+#include <cerrno>
 #include <csignal>
+#include <cstdlib>
+#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <pthread.h>
 #include <queue>
+#include <string>
+#include <sys/stat.h>
 #include <unistd.h>
-#include <vector>
 
 extern "C" {
 void cezare_key(char key);
@@ -15,114 +19,105 @@ volatile int keep_running = 1;
 
 void handle_sigint(int sig) { keep_running = 0; }
 
-struct Chunk {
-    std::vector<char> data;
-    bool is_eof;
-};
-
 struct SharedData {
-    std::queue<Chunk> q;
+    std::queue<std::string> files;
+    std::string out_dir;
     pthread_mutex_t mutex;
-    pthread_cond_t cond_full;
-    pthread_cond_t cond_empty;
-    bool producer_done;
-    const char *in_file;
-    const char *out_file;
 };
 
-void *producer(void *arg) {
-    SharedData *shared = (SharedData *)arg;
-    std::ifstream in(shared->in_file, std::ios::binary);
-    if (!in) {
-        shared->producer_done = true;
-        pthread_cond_broadcast(&shared->cond_full);
-        return nullptr;
-    }
-
-    char buffer[4096];
-    while (keep_running && in) {
-        in.read(buffer, sizeof(buffer));
-        int bytes_read = in.gcount();
-        if (bytes_read > 0) {
-            cezare(buffer, buffer, bytes_read);
-
-            pthread_mutex_lock(&shared->mutex);
-            while (shared->q.size() >= 10 && keep_running) {
-                pthread_cond_wait(&shared->cond_empty, &shared->mutex);
+void lock_mutex(pthread_mutex_t *mutex, pthread_t tid) {
+    time_t start = time(NULL);
+    while (keep_running) {
+        int rc = pthread_mutex_trylock(mutex);
+        if (rc == 0)
+            return;
+        if (rc == EBUSY) {
+            if (time(NULL) - start >= 5) {
+                std::cerr << "Возможная взаимоблокировка: поток "
+                          << (unsigned long)tid
+                          << " ожидает мьютекс более 5 секунд\n";
+                exit(1);
+            } else {
+                usleep(50000);
             }
-
-            if (!keep_running) {
-                pthread_mutex_unlock(&shared->mutex);
-                break;
-            }
-
-            Chunk chunk;
-            chunk.data.assign(buffer, buffer + bytes_read);
-            chunk.is_eof = false;
-            shared->q.push(chunk);
-
-            pthread_cond_signal(&shared->cond_full);
-            pthread_mutex_unlock(&shared->mutex);
+        } else {
+            break;
         }
     }
-
-    pthread_mutex_lock(&shared->mutex);
-    Chunk eof_chunk;
-    eof_chunk.is_eof = true;
-    shared->q.push(eof_chunk);
-    shared->producer_done = true;
-    pthread_cond_broadcast(&shared->cond_full);
-    pthread_mutex_unlock(&shared->mutex);
-
-    return nullptr;
 }
 
-void *consumer(void *arg) {
+std::string get_base(const std::string &path) {
+    size_t pos = path.find_last_of("/");
+    if (pos == std::string::npos) {
+        return path;
+    } else {
+        return path.substr(pos + 1);
+    }
+}
+
+void *worker(void *arg) {
     SharedData *shared = (SharedData *)arg;
-    std::ofstream out(shared->out_file, std::ios::binary);
-    if (!out)
-        return nullptr;
+    pthread_t tid = pthread_self();
 
-    while (true) {
-        pthread_mutex_lock(&shared->mutex);
-        while (shared->q.empty() && keep_running && !shared->producer_done) {
-            pthread_cond_wait(&shared->cond_full, &shared->mutex);
-        }
-
-        if (!keep_running) {
+    while (keep_running) {
+        lock_mutex(&shared->mutex, tid);
+        if (!keep_running || shared->files.empty()) {
             pthread_mutex_unlock(&shared->mutex);
             break;
         }
-
-        if (shared->q.empty() && shared->producer_done) {
-            pthread_mutex_unlock(&shared->mutex);
-            break;
-        }
-
-        Chunk chunk = shared->q.front();
-        shared->q.pop();
-
-        pthread_cond_signal(&shared->cond_empty);
+        std::string file = shared->files.front();
+        shared->files.pop();
         pthread_mutex_unlock(&shared->mutex);
 
-        if (chunk.is_eof)
-            break;
+        std::string out_path = shared->out_dir + "/" + get_base(file);
 
-        out.write(chunk.data.data(), chunk.data.size());
+        std::ifstream in(file, std::ios::binary);
+        std::ofstream out(out_path, std::ios::binary);
+        bool success = (in && out);
+
+        if (success) {
+            char buffer[4096];
+            while (keep_running && in) {
+                in.read(buffer, sizeof(buffer));
+                int bytes_read = in.gcount();
+                if (bytes_read > 0) {
+                    cezare(buffer, buffer, bytes_read);
+                    out.write(buffer, bytes_read);
+                }
+            }
+            if (!keep_running)
+                success = false;
+        }
+
+        if (in)
+            in.close();
+        if (out)
+            out.close();
+
+        if (!success && !keep_running)
+            unlink(out_path.c_str());
+
+        if (success && keep_running) {
+            lock_mutex(&shared->mutex, tid);
+            std::ofstream log("log.txt", std::ios::app);
+            if (log) {
+                time_t now = time(NULL);
+                char t_buf[64];
+                std::strftime(t_buf, sizeof(t_buf), "%Y-%m-%d %H:%M:%S",
+                              std::localtime(&now));
+                log << "[" << t_buf << "] Thread: " << (unsigned long)tid
+                    << ", File: " << file << "\n";
+            }
+            pthread_mutex_unlock(&shared->mutex);
+        }
     }
-
-    out.close();
-
-    if (!keep_running) {
-        unlink(shared->out_file);
-    }
-
     return nullptr;
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 4) {
-        std::cerr << "Usage: " << argv[0] << " input.txt output.txt key\n";
+    if (argc < 4) {
+        std::cerr << "Usage: " << argv[0]
+                  << " file1.txt [file2.txt...] output_dir/ key\n";
         return 1;
     }
 
@@ -132,32 +127,32 @@ int main(int argc, char *argv[]) {
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, NULL);
 
-    char key = argv[3][0];
+    char key = argv[argc - 1][0];
     cezare_key(key);
 
     SharedData shared;
-    shared.in_file = argv[1];
-    shared.out_file = argv[2];
-    shared.producer_done = false;
+    shared.out_dir = argv[argc - 2];
     pthread_mutex_init(&shared.mutex, NULL);
-    pthread_cond_init(&shared.cond_full, NULL);
-    pthread_cond_init(&shared.cond_empty, NULL);
 
-    pthread_t prod_tid, cons_tid;
-    pthread_create(&prod_tid, NULL, producer, &shared);
-    pthread_create(&cons_tid, NULL, consumer, &shared);
+    struct stat st = {0};
+    if (stat(shared.out_dir.c_str(), &st) == -1) {
+        mkdir(shared.out_dir.c_str(), 0700);
+    }
 
-    pthread_join(prod_tid, NULL);
+    for (int i = 1; i < argc - 2; ++i) {
+        shared.files.push(argv[i]);
+    }
 
-    pthread_mutex_lock(&shared.mutex);
-    pthread_cond_broadcast(&shared.cond_full);
-    pthread_mutex_unlock(&shared.mutex);
+    pthread_t threads[3];
+    for (int i = 0; i < 3; ++i) {
+        pthread_create(&threads[i], NULL, worker, &shared);
+    }
 
-    pthread_join(cons_tid, NULL);
+    for (int i = 0; i < 3; ++i) {
+        pthread_join(threads[i], NULL);
+    }
 
     pthread_mutex_destroy(&shared.mutex);
-    pthread_cond_destroy(&shared.cond_full);
-    pthread_cond_destroy(&shared.cond_empty);
 
     if (!keep_running) {
         std::cout << "Операция прервана пользователем\n";
