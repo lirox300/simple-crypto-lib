@@ -20,5 +20,5 @@ g++ -pthread -Wall -o secure_copy secure_copy.cpp ./lib.so
 ```
 ## Запуск
 ```
-./secure_copy <файл_1> [<файл_2> ... <файл_N>] <выходная_директория> <символ_ключа>
+./secure_copy [--mode=sequential|--mode=parallel] <файл_1> [<файл_2> ... <файл_N>] <выходная_директория> <символ_ключа>
 ```
