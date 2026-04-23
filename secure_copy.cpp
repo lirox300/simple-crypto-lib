@@ -98,7 +98,7 @@ void *worker(void *arg) {
         if (out)
             out.close();
 
-        if (!success && !keep_running)
+        if (!success)
             unlink(out_path.c_str());
 
         if (success && keep_running) {
