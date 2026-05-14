@@ -17,11 +17,19 @@
 extern "C" {
 void cezare_key(char key);
 void cezare(void *src, void *dst, int len);
+void *get_secure_page();
 }
 
 volatile int keep_running = 1;
 
 void handle_sigint(int sig) { keep_running = 0; }
+
+void handle_secure_violation(int sig) {
+    std::cout << "Сигнал " << (sig == SIGSEGV ? "SIGSEGV" : "SIGBUS")
+              << " перехвачен.\n";
+    std::cout << "Изоляция памяти PROT_NONE активна.\n";
+    exit(0);
+}
 
 struct SharedData {
     std::queue<std::string> files;
@@ -246,6 +254,17 @@ int main(int argc, char *argv[]) {
 end:
     if (!keep_running) {
         std::cout << "Операция прервана пользователем\n";
+    } else {
+        std::cout << "\n[TEST] Проверка аппаратной изоляции...\n";
+        void *sec_addr = get_secure_page();
+        if (sec_addr) {
+            signal(SIGSEGV, handle_secure_violation);
+            signal(SIGBUS, handle_secure_violation);
+            volatile char test = *((volatile char *)sec_addr);
+            (void)test;
+            std::cout
+                << "Ошибка: чтение из защищенной памяти выполнено успешно.\n";
+        }
     }
 
     return 0;
