@@ -301,6 +301,12 @@ void run_list(const std::string &img_path) {
         in.read((char *)&f_size, 4);
         in.read((char *)&name_len, 4);
 
+        if (name_len == 0 || name_len > 4096) {
+            std::cerr << "Ошибка: некорректный формат образа (неверная длина "
+                         "имени)\n";
+            return;
+        }
+
         if (current_pos + 24 + name_len + f_size > file_size) {
             std::cerr << "Ошибка: файл поврежден\n";
             return;
@@ -310,6 +316,14 @@ void run_list(const std::string &img_path) {
 
         std::vector<char> name_buf(name_len, 0);
         in.read(name_buf.data(), name_len);
+
+        for (char c : name_buf) {
+            if (c >= 0 && c < 32) {
+                std::cerr
+                    << "Ошибка: некорректный формат образа (мусор в имени)\n";
+                return;
+            }
+        }
 
         std::string fname(name_buf.data(), name_len);
         entries.push_back({fname, f_size});
@@ -351,16 +365,22 @@ void run_get(const std::string &img_path, const std::string &key,
 
         if (current_pos + 24 > file_size) {
             std::cerr << "Ошибка: некорректный формат образа\n";
-            break;
+            return;
         }
 
         uint32_t f_size = 0, name_len = 0;
         in.read((char *)&f_size, 4);
         in.read((char *)&name_len, 4);
 
+        if (name_len == 0 || name_len > 4096) {
+            std::cerr << "Ошибка: некорректный формат образа (неверная длина "
+                         "имени)\n";
+            return;
+        }
+
         if (current_pos + 24 + name_len + f_size > file_size) {
             std::cerr << "Ошибка: файл поврежден\n";
-            break;
+            return;
         }
 
         char salt[16];
@@ -368,6 +388,15 @@ void run_get(const std::string &img_path, const std::string &key,
 
         std::vector<char> name_buf(name_len, 0);
         in.read(name_buf.data(), name_len);
+
+        for (char c : name_buf) {
+            if (c >= 0 && c < 32) {
+                std::cerr
+                    << "Ошибка: некорректный формат образа (мусор в имени)\n";
+                return;
+            }
+        }
+
         std::string fname(name_buf.data(), name_len);
 
         if (fname == target_name) {
